@@ -1,14 +1,16 @@
 # parallel-meshes
-A family of 3D parallel unstructured meshes implemented in modern C++ and MPI. The parallelism, i.e., partitioning, re-partitioning, and load balancing, is based on space filling curves as described in the paper
+A family of 3D parallel unstructured meshes implemented in modern C++ and MPI. Provided with a partitionining scheme, the implementation distributes mesh cells to MPI processes and constructs ghost layers from local cells' face neighbors. Note that in this cimplementation, the construction of ghost layers is kept separate from the partitioning/repartitioning step. One can choose to construct the ghost layer when needed, or omit it altogether if it is not required by the numerical method.
 
-**C. Burstedde and J. Holke, "Coarse mesh partitioning for tree-based AMR", *SIAM J. Sci. Comput.*, 39(5), C364-C392, 2017**
+The partitioning scheme can be provided by any partitioner, which could be graph based or space-filling curve based, such as the one from my other repository, `parallel-mesh-partitioner`, at https://github.com/hsongxa/parallel-mesh-partitioner.
 
-The implementation includes meshes with single cell shape, such as tetrahedral mesh and hexahedral mesh, and meshes with mixed cell shapes of tetrahedron, hexahedron, pyramid, and wedge (triangular prism). Mesh adaptation, i.e., refinement and coarsening, is also supported.
+The implementation includes meshes with single cell shape, such as tetrahedral mesh or hexahedral mesh, and meshes with mixed cell shapes of tetrahedron, hexahedron, pyramid, and wedge (triangular prism).
 
 ### Requirement
 
-The code is built and tested with `g++ 9.3.0` and `MPICH 3.4.2`.
+The code is built and tested with `g++ 9.3.0` and `MPICH 3.4.2`. For meshes with mixed cell shapes, the implementation uses the C++17 standard library's `std::variant<>` hence it should be built with at least `-std=c++17`.
 
 ### Usage
 
-Example usage of the code can be found in `/examples`. To run the examples, go to the subfolder and run **`make`**. The path to the MPI installation is assumed to be `/usr/local/bin/`. For a different path, change in the **`makefile`** accordingly before running **`make`**.
+The code is all in C++ templates so there is no need to install. Simply include the header files in the `/src` directory into your projects.
+
+Example usage of the code can be found in `/test`. To run the examples, go to the subfolder and run **`make`**. The path to the MPI installation is assumed to be `/usr/local/bin/`. For a different path, change in the **`makefile`** accordingly before running **`make`**.
