@@ -18,63 +18,54 @@
 #ifndef CELL_OPERATORS_H
 #define CELL_OPERATORS_H
 
-#include "cell_types.h"
-
 #include <variant>
 
 namespace pmh {
 
-  // CT - the single cell type
-  template<typename CT>
-  struct single_shape_op
+  struct single_shape_operator
   {
+    template<typename CT>
     static shape_3d shape(const CT& cell) { return cell.shape; }
 
+    template<typename CT>
     static integer_type cell_vertex(const CT& cell, int v)
       { return cell._connectivity[v]; }
 
+    template<typename CT>
     static void cell_vertex(CT& cell, int v, integer_type vertex_id)
       { cell._connectivity[v] = vertex_id; }
 
+    template<typename CT>
     static hf_handle_t twin_hf(const CT& cell, int f)
       { return cell._twin_hfs[f]; }
 
+    template<typename CT>
     static void twin_hf(CT& cell, int f, hf_handle_t hf)
       { cell._twin_hfs[f] = hf; }
   };
 
   // CTS - multiple cell types
-  template<typename... CTS>
-  struct mixed_shape_op
+  struct mixed_shape_operator
   {
-    using cell_type = std::variant<CTS...>;
+    template<typename... CTS>
+    static shape_3d shape(const std::variant<CTS...>& cell)
+      { return std::visit([](auto&& c) { return c.shape; }, cell); }
 
-    static shape_3d shape(const cell_type& cell)
-      { return std::visit([](auto& c) { return c.shape; }, cell); }
+    template<typename... CTS>
+    static integer_type cell_vertex(const std::variant<CTS...>& cell, int v)
+      { return std::visit([v](auto&& c) { return c._connectivity[v]; }, cell); }
 
-    static integer_type cell_vertex(const cell_type& cell, int v)
-      { return std::visit([v](auto& c) { return c._connectivity[v]; }, cell); }
+    template<typename... CTS>
+    static void cell_vertex(std::variant<CTS...>& cell, int v, integer_type vertex_id)
+      { std::visit([v, vertex_id](auto&& c) { c._connectivity[v] = vertex_id; }, cell); }
 
-    static void cell_vertex(cell_type& cell, int v, integer_type vertex_id)
-      { std::visit([v, vertex_id](auto& c) { c._connectivity[v] = vertex_id; }, cell); }
+    template<typename... CTS>
+    static hf_handle_t twin_hf(const std::variant<CTS...>& cell, int f)
+      { return std::visit([f](auto&& c) { return c._twin_hfs[f]; }, cell); }
 
-    static hf_handle_t twin_hf(const cell_type& cell, int f)
-      { return std::visit([f](auto& c) { return c._twin_hfs[f]; }, cell); }
-
-    static void twin_hf(cell_type& cell, int f, hf_handle_t hf)
-      { std::visit([f, hf](auto& c) { c._twin_hfs[f] = hf; }, cell); }
-  };
-
-  template<typename CT>
-  struct cell_operator_traits
-  {
-    using operator_type = single_shape_op<CT>;
-  };
-
-  template<typename... CTS>
-  struct cell_operator_traits<std::variant<CTS...>>
-  {
-    using operator_type = mixed_shape_op<CTS...>;
+    template<typename... CTS>
+    static void twin_hf(std::variant<CTS...>& cell, int f, hf_handle_t hf)
+      { std::visit([f, hf](auto&& c) { c._twin_hfs[f] = hf; }, cell); }
   };
 
 } // namespace pmh

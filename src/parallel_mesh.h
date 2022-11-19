@@ -18,9 +18,10 @@
 #ifndef PARALLEL_MESH_H
 #define PARALLEL_MESH_H
 
-#include "vertex_type.h"
+#include "vertex_types.h"
+#include "kd_tree.h"
 #include "cell_types.h"
-#include "cell_operators.h"
+#include "cell_type_traits.h"
 
 #include <cstddef>
 #include <vector>
@@ -39,11 +40,11 @@ namespace pmh {
   // Similarly, std::variant<hex_t, wdg_t, prm_t, tet_t> will
   // give a mesh with mixed cell shapes of all four.
   template< class R, class CT,
-            class OP = typename cell_operator_traits<CT>::operator_type >
+            class OP = typename cell_type_traits<CT>::operator_type >
   class parallel_mesh_3d
   {
   public:
-    using vertex_type = vertex_3d<R, std::int64_t>;
+    using point_type = point_3d<R>;
     using cell_type = CT;
     using cell_op = OP;
     using size_type = std::size_t;
@@ -54,12 +55,7 @@ namespace pmh {
 
     // population of vertices used by local cells (no ghosts)
     template<class InputIt>
-    void fill_vertices(InputIt first, InputIt last)
-    {
-      integer_type index = 0;
-      while (first != last)
-        _vertices.emplace_back(vertex_type{*first++, *first++, *first++, index++});
-    }
+    void fill_vertices(InputIt first, InputIt last);
 
     // population of local cell connectivities
     template<class InputIt>
@@ -90,9 +86,9 @@ namespace pmh {
 
     size_type num_ghost_cells() const { return _ghost_cells.size(); }
 
-    const vertex_type& get_vertex(integer_type vid) const { return _vertices[vid]; }
+    const point_type& get_vertex(integer_type vid) const { return _vertices[vid]; }
 
-    vertex_type& get_vertex(integer_type vid) { return _vertices[vid]; }
+    point_type& get_vertex(integer_type vid) { return _vertices[vid]; }
 
     const cell_type& get_cell(cell_handle_t cell_handle) const
     {
@@ -117,6 +113,9 @@ namespace pmh {
       if (!hf.is_valid()) return cell_handle_t();
       return hf.cell_handle();
     }
+
+    // TODO: other topological relationships can all be derived from face neighbors
+    // TODO: and reference shapes (of tet, hex, wdg, and prm, respectively)
 
     // ------ static queries on a given cell ------
 
@@ -148,11 +147,16 @@ namespace pmh {
 	}
 */
   private:
-    std::vector<cell_type>   _local_cells;
-    std::vector<cell_type>   _ghost_cells;
-    std::vector<vertex_type> _vertices;
+    std::vector<point_type> _vertices;
+
+    std::vector<cell_type>  _local_cells;
+    std::vector<cell_type>  _ghost_cells;
 
     int _part_id; // rank
+
+    // only used in MPI operations
+    using vertex_comparer = vertex_3d_comparer<R, std::int64_t>;
+    kd_tree<3, vertex_3d<R, std::int64_t>, vertex_comparer> _vtx_tree;
 
   public: // mainly for debugging
     void print_connectivity_table(std::ostream& out) const;
@@ -160,6 +164,16 @@ namespace pmh {
     void export_to_msh_format(std::ostream& out, int config) const;
   };
 
+  template<class R, class CT, class OP> template<class InputIt>
+  void parallel_mesh_3d<R, CT, OP>::fill_vertices(InputIt first, InputIt last)
+  {
+    integer_type index = 0;
+    while (first != last)
+    {
+      // _vertices.emplace_back(vertex_type{*first++, *first++, *first++, index++});
+
+    }
+  }
 
   template<class R, class CT, class OP> template<class InputIt>
   void parallel_mesh_3d<R, CT, OP>::fill_connectivity(InputIt first, InputIt last)

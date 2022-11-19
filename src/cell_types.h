@@ -18,6 +18,8 @@
 #ifndef CELL_TYPES_H
 #define CELL_TYPES_H
 
+#include "cell_topologies.h"
+
 #include <cstdint>
 
 namespace pmh {
@@ -90,16 +92,6 @@ namespace pmh {
     integer_type _int_rep;
   };
 
-
-  // the shape enum
-  enum class shape_3d
-  {
-    HEXAHEDRON = 0,
-    WEDGE,
-    PYRAMID,
-    TETRAHEDRON
-  };
-
   // hexahedron
   struct hex_t
   {
@@ -108,7 +100,7 @@ namespace pmh {
     integer_type _connectivity[8];
     hf_handle_t  _twin_hfs[6];
 
-    static constexpr shape_3d shape = shape_3d::HEXAHEDRON;
+    using topology = hex_topology;
   };
 
   // wedge
@@ -119,7 +111,7 @@ namespace pmh {
     integer_type _connectivity[6];
     hf_handle_t  _twin_hfs[5];
 
-    static constexpr shape_3d shape = shape_3d::WEDGE;
+    using topology = wdg_topology;
   };
 
   // pyramid
@@ -130,7 +122,7 @@ namespace pmh {
     integer_type _connectivity[5];
     hf_handle_t  _twin_hfs[5];
 
-    static constexpr shape_3d shape = shape_3d::PYRAMID;
+    using topology = prm_topology;
   }; 
 
   // tetrahedron
@@ -141,8 +133,9 @@ namespace pmh {
     integer_type _connectivity[4];
     hf_handle_t  _twin_hfs[4];
 
-    static constexpr shape_3d shape = shape_3d::TETRAHEDRON;
+    using topology = tet_topology;
   };
+
 } // namespace pmh
 
 #endif

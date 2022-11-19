@@ -15,21 +15,40 @@
   along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#ifndef VERTEX_TYPE_H
-#define VERTEX_TYPE_H
+#ifndef VERTEX_TYPES_H
+#define VERTEX_TYPES_H
 
 #include <tuple>
 #include <utility>
+#include <cassert>
 
 namespace pmh {
 
-  template<typename T, typename I>
-  struct vertex_3d
+  template<typename T>
+  struct point_3d
   {
     T x;
     T y;
     T z;
-    I id; // index local to the rank
+  };
+
+  template<typename T, typename I>
+  struct vertex_3d : public point_3d<T>
+  {
+    I id; // vertex index local to the rank
+  };
+
+  // comparer used by kd_tree
+  template<typename T, typename I>
+  struct vertex_3d_comparer
+  {
+    int operator()(const vertex_3d<T, I>& va, const vertex_3d<T, I>& vb, int dim) const
+    {
+      assert(dim >= 0 && dim <= 2);
+      if (dim == 0) return va.x < vb.x ? -1 : (va.x == vb.x ? 0 : 1);
+      if (dim == 1) return va.y < vb.y ? -1 : (va.y == vb.y ? 0 : 1);
+      if (dim == 2) return va.z < vb.z ? -1 : (va.z == vb.z ? 0 : 1);
+    }
   };
 
   // frequently, we need to identify a cell face by its four
@@ -38,11 +57,11 @@ namespace pmh {
   // negative so it is always ordered to the first)
 
   template<typename I>
-  using tuple_4 = std::tuple<I, I, I, I>;
+  using vid_tuple = std::tuple<I, I, I, I>;
 
-  // order items of tuple_4 in-place
+  // order items of vid_tuple in-place
   template<typename I>
-  void order_tuple_4(tuple_4<I>& tuple)
+  void order_vid_tuple(vid_tuple<I>& tuple)
   {
     I& item0 = std::get<0>(tuple);
     I& item1 = std::get<1>(tuple);
