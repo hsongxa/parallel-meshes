@@ -487,9 +487,12 @@ private:
 
   private:
     // construct variant of topologies corresponding to the given cell types
-    using topo_type = std::variant<topology_t<CTS>...>;
-    static const topo_type _topos[sizeof...(CTS)];
+    static const std::variant<topology_t<CTS>...> _topos[sizeof...(CTS)];
   };
+
+  template<typename... CTS>
+  const std::variant<topology_t<CTS>...> mixed_shape_topology<CTS...>::_topos[sizeof...(CTS)]
+    = { topology_t<CTS>()... };
 
 } // namespace pmh
 

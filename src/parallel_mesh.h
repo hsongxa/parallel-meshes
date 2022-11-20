@@ -30,8 +30,10 @@
 
 namespace pmh {
 
-  // R - floating point type for coordinates, CT - cell type,
-  // OP - cell operator type
+  // R - floating point type for coordinates, CT - cell type
+  // which could be single cell type or variant of multiple
+  // cell types, OP - cell operator type that operates on CT,
+  // TP - cell topology corresponding to CT
   //
   // Passing a tet_t type to CT will make a tetrahedral mesh,
   // a hex_t for hexahedral mesh, ..., etc. For mixed
@@ -40,13 +42,15 @@ namespace pmh {
   // Similarly, std::variant<hex_t, wdg_t, prm_t, tet_t> will
   // give a mesh with mixed cell shapes of all four.
   template< class R, class CT,
-            class OP = typename cell_type_traits<CT>::operator_type >
+            class OP = typename cell_type_traits<CT>::operator_type,
+            class TP = typename cell_type_traits<CT>::topology_type >
   class parallel_mesh_3d
   {
   public:
     using point_type = point_3d<R>;
     using cell_type = CT;
     using cell_op = OP;
+    using cell_tp = TP;
     using size_type = std::size_t;
 
     explicit parallel_mesh_3d(int part_id) : _part_id(part_id) {}
@@ -78,7 +82,7 @@ namespace pmh {
     // one layer of ghost cells that are face neighbors of local cells
     void construct_ghost_layer();
 
-    // ------ queries ------
+    // ------ queries of vertices and cells ------
 
     size_type num_vertices() const { return _vertices.size(); }
 
@@ -115,11 +119,10 @@ namespace pmh {
     }
 
     // TODO: other topological relationships can all be derived from face neighbors
-    // TODO: and reference shapes (of tet, hex, wdg, and prm, respectively)
+    // TODO: and cell topologies (of tet, hex, wdg, and prm)
+    static shape_3d cell_shape(const cell_type& cell) { return cell_tp::shape(cell); }
 
     // ------ static queries on a given cell ------
-
-    static shape_3d cell_shape(const cell_type& cell) { return cell_op::shape(cell); }
 
     static integer_type cell_vertex(const cell_type& cell, int v)
       { return cell_op::cell_vertex(cell, v); }
@@ -164,8 +167,8 @@ namespace pmh {
     void export_to_msh_format(std::ostream& out, int config) const;
   };
 
-  template<class R, class CT, class OP> template<class InputIt>
-  void parallel_mesh_3d<R, CT, OP>::fill_vertices(InputIt first, InputIt last)
+  template<class R, class CT, class OP, class TP> template<class InputIt>
+  void parallel_mesh_3d<R, CT, OP, TP>::fill_vertices(InputIt first, InputIt last)
   {
     integer_type index = 0;
     while (first != last)
@@ -175,38 +178,38 @@ namespace pmh {
     }
   }
 
-  template<class R, class CT, class OP> template<class InputIt>
-  void parallel_mesh_3d<R, CT, OP>::fill_connectivity(InputIt first, InputIt last)
+  template<class R, class CT, class OP, class TP> template<class InputIt>
+  void parallel_mesh_3d<R, CT, OP, TP>::fill_connectivity(InputIt first, InputIt last)
   {
   }
 
-  template<class R, class CT, class OP>
-  void parallel_mesh_3d<R, CT, OP>::fill_local_twin_hfs()
+  template<class R, class CT, class OP, class TP>
+  void parallel_mesh_3d<R, CT, OP, TP>::fill_local_twin_hfs()
   {
   }
 
-  template<class R, class CT, class OP> template<class InputIt>
-  void parallel_mesh_3d<R, CT, OP>::repartition(InputIt first, InputIt last)
+  template<class R, class CT, class OP, class TP> template<class InputIt>
+  void parallel_mesh_3d<R, CT, OP, TP>::repartition(InputIt first, InputIt last)
   {
   }
 
-  template<class R, class CT, class OP>
-  void parallel_mesh_3d<R, CT, OP>::construct_ghost_layer()
+  template<class R, class CT, class OP, class TP>
+  void parallel_mesh_3d<R, CT, OP, TP>::construct_ghost_layer()
   {
   }
 
-  template<class R, class CT, class OP>
-  void parallel_mesh_3d<R, CT, OP>::print_connectivity_table(std::ostream& out) const
+  template<class R, class CT, class OP, class TP>
+  void parallel_mesh_3d<R, CT, OP, TP>::print_connectivity_table(std::ostream& out) const
   {
   }
 
-  template<class R, class CT, class OP>
-  void parallel_mesh_3d<R, CT, OP>::print_twin_hfs_table(std::ostream& out) const
+  template<class R, class CT, class OP, class TP>
+  void parallel_mesh_3d<R, CT, OP, TP>::print_twin_hfs_table(std::ostream& out) const
   {
   }
 
-  template<class R, class CT, class OP>
-  void parallel_mesh_3d<R, CT, OP>::export_to_msh_format(std::ostream& out, int config) const
+  template<class R, class CT, class OP, class TP>
+  void parallel_mesh_3d<R, CT, OP, TP>::export_to_msh_format(std::ostream& out, int config) const
   {
   }
 /*
