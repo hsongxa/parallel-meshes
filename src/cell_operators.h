@@ -25,9 +25,6 @@ namespace pmh {
   struct single_shape_operator
   {
     template<typename CT>
-    static shape_3d shape(const CT& cell) { return cell.shape; }
-
-    template<typename CT>
     static integer_type cell_vertex(const CT& cell, int v)
       { return cell._connectivity[v]; }
 
@@ -47,10 +44,6 @@ namespace pmh {
   // CTS - multiple cell types
   struct mixed_shape_operator
   {
-    template<typename... CTS>
-    static shape_3d shape(const std::variant<CTS...>& cell)
-      { return std::visit([](auto&& c) { return c.shape; }, cell); }
-
     template<typename... CTS>
     static integer_type cell_vertex(const std::variant<CTS...>& cell, int v)
       { return std::visit([v](auto&& c) { return c._connectivity[v]; }, cell); }
