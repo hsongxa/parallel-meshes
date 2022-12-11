@@ -19,44 +19,61 @@
 #define CELL_OPERATORS_H
 
 #include <variant>
+#include <cassert>
+
+#include "cell_shapes.h"
 
 namespace pmh {
 
+  // cell operators are responsible for creating default cells from a
+  // shpe_3d enum and setting up cell's connectivity and twin half-facets
+
+  template<typename CT>
   struct single_shape_operator
   {
-    template<typename CT>
+    static CT create_cell(shape_3d shape) { return CT(); }
+
     static integer_type cell_vertex(const CT& cell, int v)
       { return cell._connectivity[v]; }
 
-    template<typename CT>
     static void cell_vertex(CT& cell, int v, integer_type vertex_id)
       { cell._connectivity[v] = vertex_id; }
 
-    template<typename CT>
     static hf_handle_t twin_hf(const CT& cell, int f)
       { return cell._twin_hfs[f]; }
 
-    template<typename CT>
     static void twin_hf(CT& cell, int f, hf_handle_t hf)
       { cell._twin_hfs[f] = hf; }
   };
 
   // CTS - multiple cell types
+  template<typename... CTS>
   struct mixed_shape_operator
   {
-    template<typename... CTS>
+    static std::variant<CTS...> create_cell(shape_3d shape)
+    {
+      if (shape == shape_3d::HEXAHEDRON)
+        return hex_t();
+      else if (shape == shape_3d::WEDGE)
+        return wdg_t();
+      else if (shape == shape_3d::PYRAMID)
+        return prm_t();
+      else
+      {
+        assert(shape == shape_3d::TETRAHEDRON);
+        return tet_t();
+      }
+    }
+
     static integer_type cell_vertex(const std::variant<CTS...>& cell, int v)
       { return std::visit([v](auto&& c) { return c._connectivity[v]; }, cell); }
 
-    template<typename... CTS>
     static void cell_vertex(std::variant<CTS...>& cell, int v, integer_type vertex_id)
       { std::visit([v, vertex_id](auto&& c) { c._connectivity[v] = vertex_id; }, cell); }
 
-    template<typename... CTS>
     static hf_handle_t twin_hf(const std::variant<CTS...>& cell, int f)
       { return std::visit([f](auto&& c) { return c._twin_hfs[f]; }, cell); }
 
-    template<typename... CTS>
     static void twin_hf(std::variant<CTS...>& cell, int f, hf_handle_t hf)
       { std::visit([f, hf](auto&& c) { c._twin_hfs[f] = hf; }, cell); }
   };

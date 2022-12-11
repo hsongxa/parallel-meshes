@@ -24,6 +24,8 @@
 #include "cell_type_traits.h"
 
 #include <cstddef>
+#include <limits>
+#include <tuple>
 #include <vector>
 #include <map>
 #include <cassert>
@@ -32,6 +34,9 @@
 
 namespace pmh {
 
+  // Unstructured 3D distributed meshes with any combination
+  // of cell types of tet, hex, wedge, or pyramid.
+  //
   // R - floating point type for coordinates, CT - cell type
   // which could be single cell type or variant of multiple
   // cell types, OP - cell operator type that operates on CT,
@@ -83,6 +88,7 @@ namespace pmh {
     void construct_ghost_layer();
 
     // ------ queries of vertices, faces, and cells ------
+    // ------ bounding box and centroid are needed by SFC based mesh partitioners ------
 
     size_type num_vertices() const { return _vertices.size(); }
 
@@ -113,6 +119,10 @@ namespace pmh {
       if (cell_handle.is_ghost()) return _ghost_cells[cell_handle.local_index()];
       return _local_cells[cell_handle.local_index()];
     }
+
+    std::tuple<R, R, R, R, R, R> local_bounding_box() const;
+
+    std::tuple<R, R, R> cell_centroid(cell_handle_t cell_handle) const;
 
     // ------ queries of topological relationships ------
 
@@ -156,25 +166,6 @@ namespace pmh {
 
     void fill_vtx_to_hfs();
 
-    // ------ helpers for mesh I/O ------
-
-    // The following two functions are the ONLY places where we must be explicit
-    // about the cell types, which are needed when doing mesh I/O
-    static cell_type& emplace_default_cell(std::vector<cell_type>& cell_vector, shape_3d shape)
-    {
-      if (shape == shape_3d::HEXAHEDRON)
-        return cell_vector.emplace_back(hex_t());
-      else if (shape == shape_3d::WEDGE)
-        return cell_vector.emplace_back(wdg_t());
-      else if (shape == shape_3d::PYRAMID)
-        return cell_vector.emplace_back(prm_t());
-      else
-      {
-        assert(shape == shape_3d::TETRAHEDRON);
-        return cell_vector.emplace_back(tet_t());
-      }
-    }
-
   private:
     std::vector<point_type>  _vertices;
     std::vector<hf_handle_t> _vtx_to_hfs;
@@ -187,6 +178,9 @@ namespace pmh {
     // only used in MPI operations
     using vertex_comparer = vertex_3d_comparer<R, std::int64_t>;
     kd_tree<3, vertex_3d<R, std::int64_t>, vertex_comparer> _vtx_tree;
+
+    static constexpr int MAX_NUM_VERTICES_PER_FACE = 4;
+    static constexpr int MAX_NUM_FACES_INCIDENT_TO_VERTEX = 4; // pyramid has 4, all other types have 3
 
   public: // mainly for debugging
     void print_connectivity(std::ostream& out) const;
@@ -201,7 +195,7 @@ namespace pmh {
     _vertices.clear();
 
     while (first != last)
-      _vertices.emplace_back(point_3d{*first++, *first++, *first++});
+      _vertices.emplace_back(point_type{*first++, *first++, *first++});
   }
 
   template<class R, class CT, class OP, class TP> template<class InputIt>
@@ -213,7 +207,8 @@ namespace pmh {
     while (first != last) // format of each cell is: <shape> <v1, v2, ...>
     {
       shape_3d shape = static_cast<shape_3d>(*first++);
-      cell_type& cell = emplace_default_cell(_local_cells, shape);
+      _local_cells.push_back(cell_op::create_cell(shape));
+      cell_type& cell = _local_cells[_local_cells.size() - 1];
       for (int i = 0; i < cell_tp::num_vertices(cell); ++i)
         cell_vertex(cell, i, *first++);
     }
@@ -222,10 +217,10 @@ namespace pmh {
   template<class R, class CT, class OP, class TP>
   void parallel_mesh_3d<R, CT, OP, TP>::fill_twin_hfs()
   {
-    int face_vertices[4];  // maximum 4 vertices in each face for all cell types
+    int face_vertices[MAX_NUM_VERTICES_PER_FACE];
     std::map<vid_tuple<integer_type>, hf_handle_t> dict;
 
-    for (std::size_t c = 0; c < _local_cells.size(); ++c)
+    for (size_type c = 0; c < _local_cells.size(); ++c)
     {
       cell_type& cell = _local_cells[c];
       cell_handle_t cell_handle = cell_handle_t(c, false);
@@ -235,7 +230,7 @@ namespace pmh {
         int num_vertices = cell_tp::num_vertices_of_face(cell, f);
 
         vid_tuple<integer_type> vtuple = num_vertices < 4 ?
-          std::make_tuple(-1, cell_vertex(cell, face_vertices[0]),
+          std::make_tuple(integer_type(-1), cell_vertex(cell, face_vertices[0]),
                           cell_vertex(cell, face_vertices[1]), cell_vertex(cell, face_vertices[2])) :
           std::make_tuple(cell_vertex(cell, face_vertices[0]), cell_vertex(cell, face_vertices[1]),
                           cell_vertex(cell, face_vertices[2]), cell_vertex(cell, face_vertices[3]));
@@ -254,7 +249,7 @@ namespace pmh {
       }
     }
 
-    for (std::size_t c = 0; c < _ghost_cells.size(); ++c)
+    for (size_type c = 0; c < _ghost_cells.size(); ++c)
     {
       cell_type& cell = _ghost_cells[c];
       cell_handle_t cell_handle = cell_handle_t(c, true);
@@ -264,7 +259,7 @@ namespace pmh {
         int num_vertices = cell_tp::num_vertices_of_face(cell, f);
 
         vid_tuple<integer_type> vtuple = num_vertices < 4 ?
-          std::make_tuple(-1, cell_vertex(cell, face_vertices[0]),
+          std::make_tuple(integer_type(-1), cell_vertex(cell, face_vertices[0]),
                           cell_vertex(cell, face_vertices[1]), cell_vertex(cell, face_vertices[2])) :
           std::make_tuple(cell_vertex(cell, face_vertices[0]), cell_vertex(cell, face_vertices[1]),
                           cell_vertex(cell, face_vertices[2]), cell_vertex(cell, face_vertices[3]));
@@ -288,15 +283,15 @@ namespace pmh {
   template<class R, class CT, class OP, class TP>
   void parallel_mesh_3d<R, CT, OP, TP>::fill_vtx_to_hfs()
   {
-    int incident_faces[4]; // maximum 4 faces meet at a vertex for all cell types
-    int face_vertices[4];  // maximum 4 vertices in each face for all cell types
+    int incident_faces[MAX_NUM_FACES_INCIDENT_TO_VERTEX];
+    int face_vertices[MAX_NUM_VERTICES_PER_FACE];
 
     // allocate and initialize with invalid hfs
     _vtx_to_hfs.resize(_vertices.size());
     std::fill(_vtx_to_hfs.begin(), _vtx_to_hfs.end(), hf_handle_t());
 
     // first, go through ghost cells
-    for (std::size_t c = 0; c < _ghost_cells.size(); ++c)
+    for (size_type c = 0; c < _ghost_cells.size(); ++c)
     {
       cell_type& cell = _ghost_cells[c];
       cell_handle_t cell_handle = cell_handle_t(c, true);
@@ -324,7 +319,7 @@ namespace pmh {
 
     // then, local cells - this may overwrite the info filled above,
     // which means local cell' faces get higher priority
-    for (std::size_t c = 0; c < _local_cells.size(); ++c)
+    for (size_type c = 0; c < _local_cells.size(); ++c)
     {
       cell_type& cell = _local_cells[c];
       cell_handle_t cell_handle = cell_handle_t(c, false);
@@ -352,6 +347,54 @@ namespace pmh {
     }
   }
 
+  template<class R, class CT, class OP, class TP>
+  std::tuple<R, R, R, R, R, R> parallel_mesh_3d<R, CT, OP, TP>::local_bounding_box() const
+  {
+    R xmin = std::numeric_limits<R>::max();
+    R ymin = std::numeric_limits<R>::max();
+    R zmin = std::numeric_limits<R>::max();
+    R xmax = std::numeric_limits<R>::lowest();
+    R ymax = std::numeric_limits<R>::lowest();
+    R zmax = std::numeric_limits<R>::lowest();
+
+    for (size_type c = 0; c < _local_cells.size(); ++c)
+    {
+      const cell_type& cell = get_cell(c); // local cell index automatically converted to cell handle
+      for (int v = 0; v < cell_tp::num_vertices(cell); ++v)
+      {
+        const point_type& point = _vertices[cell_vertex(cell, v)];
+        if (point.x() < xmin) xmin = point.x();
+        if (point.x() > xmax) xmax = point.x();
+        if (point.y() < ymin) ymin = point.y();
+        if (point.y() > ymax) ymax = point.y();
+        if (point.z() < zmin) zmin = point.z();
+        if (point.z() > zmax) zmax = point.z();
+      }
+    }
+
+    return std::make_tuple(xmin, ymin, zmin, xmax, ymax, zmax);
+  }
+
+  template<class R, class CT, class OP, class TP>
+  std::tuple<R, R, R> parallel_mesh_3d<R, CT, OP, TP>::cell_centroid(cell_handle_t cell_handle) const
+  {
+    R x{0}, y{0}, z{0};
+
+    const cell_type& cell = get_cell(cell_handle);
+    int num_vertices = cell_tp::num_vertices(cell);
+    assert(num_vertices > 0);
+
+    for (int v = 0; v < num_vertices; ++v)
+    {
+      const point_type& point = _vertices[cell_vertex(cell, v)];
+      x += point.x();
+      y += point.y();
+      z += point.z();
+    }
+
+    return std::make_tuple(x / num_vertices, y / num_vertices, z / num_vertices);
+  }
+
   template<class R, class CT, class OP, class TP> template<class InputIt>
   void parallel_mesh_3d<R, CT, OP, TP>::repartition(InputIt first, InputIt last)
   {
@@ -365,118 +408,100 @@ namespace pmh {
   template<class R, class CT, class OP, class TP>
   void parallel_mesh_3d<R, CT, OP, TP>::print_connectivity(std::ostream& out) const
   {
+    out << "local cell-to-vertex table (size = " << _local_cells.size() << ")" << std::endl;
+    for (size_type c = 0; c < _local_cells.size(); ++c)
+    {
+      const cell_type& cell = _local_cells[c];
+      out << c << ": ";
+      for (int v = 0; v < cell_tp::num_vertices(cell); ++v)
+        out << "   " << cell_vertex(cell, v);
+      out << std::endl;
+    }
+
+    out << "ghost cell-to-vertex table (size = " << _ghost_cells.size() << ")" << std::endl;
+    for (size_type c = 0; c < _ghost_cells.size(); ++c)
+    {
+      const cell_type& cell = _ghost_cells[c];
+      out << c << ": ";
+      for (int v = 0; v < cell_tp::num_vertices(cell); ++v)
+        out << "   " << cell_vertex(cell, v);
+      out << std::endl;
+    }
   }
 
   template<class R, class CT, class OP, class TP>
   void parallel_mesh_3d<R, CT, OP, TP>::print_twin_hfs(std::ostream& out) const
   {
+    out << "local twin-half-facet table (size = " << _local_cells.size() << ")" << std::endl;
+    for (size_type c = 0; c < _local_cells.size(); ++c)
+    {
+      const cell_type& cell = _local_cells[c];
+      out << c << ":";
+      for (int f = 0; f < cell_tp::num_faces(cell); ++f)
+      {
+        hf_handle_t hf = twin_hf(cell, f);
+        if (hf.is_valid())
+        {
+          if (hf.cell_handle().is_ghost()) out << "  <g";
+          else out << "  <";
+          out << hf.cell_handle().local_index() << ", " << hf.face_index() << ">";
+        }
+        else out << "  <-->";
+      }
+      out << std::endl;
+    }
+
+    out << "ghost twin-half-facet table (size = " << _ghost_cells.size() << ")" << std::endl;
+    for (size_type c = 0; c < _ghost_cells.size(); ++c)
+    {
+      const cell_type& cell = _ghost_cells[c];
+      out << c << ":";
+      for (int f = 0; f < cell_tp::num_faces(cell); ++f)
+      {
+        hf_handle_t hf = twin_hf(cell, f);
+        if (hf.is_valid())
+        {
+          if (hf.cell_handle().is_ghost()) out << "  <g";
+          else out << "  <";
+          out << hf.cell_handle().local_index() << ", " << hf.face_index() << ">";
+        }
+        else out << "  <-->";
+      }
+      out << std::endl;
+    }
   }
 
   template<class R, class CT, class OP, class TP>
   void parallel_mesh_3d<R, CT, OP, TP>::export_to_msh_format(std::ostream& out, int config) const
   {
+    assert(config >= 0 && config <= 2);
+    int cell_index = 1; // 1-based index in Gmsh!
+
+    if (config == 0 || config == 2)
+    {
+      for (auto it = _local_cells.cbegin(); it != _local_cells.cend(); ++it)
+      {
+        const cell_type& cell = *it;
+        out << cell_index++;
+        for (int v = 0; v < cell_tp::num_vertices(cell); ++v)
+                out << " " << cell_vertex(cell, v) + 1; // vertex index is also 1-based!
+        out << std::endl;
+      }
+    }
+
+    if (config == 1 || config == 2)
+    {
+      for (auto it = _ghost_cells.cbegin(); it != _ghost_cells.cend(); ++it)
+      {
+        const cell_type& cell = *it;
+        out << cell_index++;
+        for (int v = 0; v < cell_tp::num_vertices(cell); ++v)
+                out << " " << cell_vertex(cell, v) + 1; // vertex index is also 1-based!
+        out << std::endl;
+      }
+    }
   }
 
-/*
-template<class CT0, class CT1, class CT2, class CT3>
-void parallel_mesh<CT0, CT1, CT2, CT3>::print_connectivity_table(std::ostream& out) const
-{
-	out << "local cell-to-vertex table (size = " << _local_cells.size() << ", used size = " << _local_cells.used_size() << ")" << std::endl;
-	for (auto it = _local_cells.cbegin(); it != _local_cells.cend(); ++it)
-	{
-		const cell_type& cell = *it;
-		out << it.at_index() << ": * " << cell.index() << " *";
-		for (int v = 0; v < reference_shape_3d::num_vertices(cell_shape(cell)); ++v)
-			out << "   " << cell_vertex(cell, v);
-		out << std::endl;
-	}
-	out << "ghost cell-to-vertex table (size = " << _ghost_cells.size() << ", used size = " << _ghost_cells.used_size() << ")" << std::endl;
-	for (auto it = _ghost_cells.cbegin(); it != _ghost_cells.cend(); ++it)
-	{
-		const cell_type& cell = *it;
-		out << it.at_index() << ": * " << cell.index() << " *";
-		for (int v = 0; v < reference_shape_3d::num_vertices(cell_shape(cell)); ++v)
-			out << "   " << cell_vertex(cell, v);
-		out << std::endl;
-	}
-}
-
-template<class CT0, class CT1, class CT2, class CT3>
-void parallel_mesh<CT0, CT1, CT2, CT3>::print_twin_hfs_table(std::ostream& out) const
-{
-	out << "local twin-half-facet table (size = " << _local_cells.size() << ", used size = " << _local_cells.used_size() << ")" << std::endl;
-	for (auto it = _local_cells.cbegin(); it != _local_cells.cend(); ++it)
-	{
-		const cell_type& cell = *it;
-		out << it.at_index() << ":";
-		for (int f = 0; f < reference_shape_3d::num_faces(cell_shape(cell)); ++f)
-		{
-			hf_handle_t hf = twin_hf(cell, f);
-			if (hf.is_valid())
-			{
-				if (hf.cell_index().is_ghost())
-					out << "  <g";
-				else
-					out << "  <";
-				out << hf.cell_index().index() << ", " << hf.face_index() << ">";
-			}
-			else
-				out << "  <-->";
-		}
-		out << std::endl;
-	}
-	out << "ghost twin-half-facet table (size = " << _ghost_cells.size() << ", used size = " << _ghost_cells.used_size() << ")" << std::endl;
-	for (auto it = _ghost_cells.cbegin(); it != _ghost_cells.cend(); ++it)
-	{
-		const cell_type& cell = *it;
-		out << it.at_index() << ":";
-		for (int f = 0; f < reference_shape_3d::num_faces(cell_shape(cell)); ++f)
-		{
-			hf_handle_t hf = twin_hf(cell, f);
-			if (hf.is_valid())
-			{
-				if (hf.cell_index().is_ghost())
-					out << "  <g";
-				else
-					out << "  <";
-				out << hf.cell_index().index() << ", " << hf.face_index() << ">";
-			}
-			else
-				out << "  <-->";
-		}
-		out << std::endl;
-	}
-}
-
-template<class CT0, class CT1, class CT2, class CT3>
-void parallel_mesh<CT0, CT1, CT2, CT3>::export_to_msh_format(std::ostream& out, int config) const
-{
-	assert(config >= 0 && config <= 2);
-	int cell_index = 1; // 1-based index in Gmsh!
-	if (config == 0 || config == 2)
-	{
-		for (auto it = _local_cells.cbegin(); it != _local_cells.cend(); ++it)
-		{
-			const cell_type& cell = *it;
-			out << cell_index++;
-			for (int v = 0; v < reference_shape_3d::num_vertices(cell_shape(cell)); ++v)
-				out << " " << cell_vertex(cell, v) + 1; // vertex index is also 1-based!
-			out << std::endl;
-		}
-	}
-	if (config == 1 || config == 2)
-	{
-		for (auto it = _ghost_cells.cbegin(); it != _ghost_cells.cend(); ++it)
-		{
-			const cell_type& cell = *it;
-			out << cell_index++;
-			for (int v = 0; v < reference_shape_3d::num_vertices(cell_shape(cell)); ++v)
-				out << " " << cell_vertex(cell, v) + 1; // vertex index is also 1-based!
-			out << std::endl;
-		}
-	}
-}
-*/
 } // namespace pmh
 
 #endif

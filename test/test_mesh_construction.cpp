@@ -18,23 +18,65 @@
 #include "tests.h"
 #include "parallel_mesh.h"
 
+#include <vector>
 #include <variant>
+#include <iostream>
 
 int test_mesh_construction()
 {
   using namespace pmh;
 
-  // tet mesh
-  parallel_mesh_3d<float, tet_t> tet_mesh(0);
-
+  std::vector<double> vertices{0, 0, 0, 1, 0, 0, 2, 0, 0,
+                               0, 1, 0, 1, 1, 0, 2, 1, 0,
+                               0, 2, 0, 1, 2, 0, 2, 2, 0,
+                               0, 0, 1, 1, 0, 1, 2, 0, 1,
+                               0, 1, 1, 1, 1, 1, 2, 1, 1,
+                               0, 2, 1, 1, 2, 1, 2, 2, 1,
+                               0, 0, 2, 1, 0, 2, 2, 0, 2,
+                               0, 1, 2, 1, 1, 2, 2, 1, 2,
+                               0, 2, 2, 1, 2, 2, 2, 2, 2};
+  std::vector<int> connect{0, 0, 1, 4, 3, 9, 10, 13, 12,
+                           0, 1, 2, 5, 4, 10, 11, 14, 13,
+                           0, 3, 4, 7, 6, 12, 13, 16, 15,
+                           0, 4, 5, 8, 7, 13, 14, 17, 16,
+                           0, 9, 10, 13, 12, 18, 19, 22, 21,
+                           0, 10, 11, 14, 13, 19, 20, 23, 22,
+                           0, 12, 13, 16, 15, 21, 22, 25, 24,
+                           0, 13, 14, 17, 16, 22, 23, 26, 25};
   // hex mesh
   parallel_mesh_3d<double, hex_t> hex_mesh(0);
+  hex_mesh.fill_local_vertices(vertices.begin(), vertices.end());
+  hex_mesh.fill_local_cells(connect.begin(), connect.end());
+  hex_mesh.construct_topology();
 
-  // mixed shape mesh of tet, hex, and wedge
-  parallel_mesh_3d<float, std::variant<tet_t, hex_t, wdg_t>> mixed_3_mesh(0);
+  std::cout << "------ hex mesh cell connectivities ------" << std::endl;
+  hex_mesh.print_connectivity(std::cout);
+  std::cout << "------ hex mesh twin half-facets ------" << std::endl;
+  hex_mesh.print_twin_hfs(std::cout);
+  std::cout << std::endl;
+
+  // add one more vertex and a pyramid to the list
+  vertices.push_back(1);
+  vertices.push_back(1);
+  vertices.push_back(3);
+  connect.push_back(2);
+  connect.push_back(18);
+  connect.push_back(19);
+  connect.push_back(22);
+  connect.push_back(21);
+  connect.push_back(27);
 
   // mixed shape mesh of hex, tet, wedge, and pyramid
-  parallel_mesh_3d<double, std::variant<hex_t, tet_t, wdg_t, prm_t>> mixed_4_mesh(0);
+  parallel_mesh_3d<double, std::variant<hex_t, tet_t, wdg_t, prm_t>> mixed_mesh(0);
+  mixed_mesh.fill_local_vertices(vertices.begin(), vertices.end());
+  mixed_mesh.fill_local_cells(connect.begin(), connect.end());
+  mixed_mesh.construct_topology();
+
+  std::cout << "------ mixed mesh cell connectivities ------" << std::endl;
+  mixed_mesh.print_connectivity(std::cout);
+  std::cout << "------ mixed mesh twin half-facets ------" << std::endl;
+  mixed_mesh.print_twin_hfs(std::cout);
+  std::cout << std::endl;
 
   return 0;
 }
