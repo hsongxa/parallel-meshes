@@ -50,6 +50,8 @@ namespace pmh {
   template<typename... CTS>
   struct mixed_shape_operator
   {
+    // NOTE: this is the only function that we must be
+    // NOTE: explicit about the cell types !
     static std::variant<CTS...> create_cell(shape_3d shape)
     {
       if (shape == shape_3d::HEXAHEDRON)

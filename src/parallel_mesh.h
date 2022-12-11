@@ -185,7 +185,8 @@ namespace pmh {
   public: // mainly for debugging
     void print_connectivity(std::ostream& out) const;
     void print_twin_hfs(std::ostream& out) const;
-    void export_to_msh_format(std::ostream& out, int config) const;
+    // export: local cells only (config=0); ghost cells only (config=1); or both local and ghost cells (config=2)
+    void export_to_msh_format(std::ostream& out, int config = 0) const;
   };
 
   template<class R, class CT, class OP, class TP> template<class InputIt>
@@ -359,16 +360,16 @@ namespace pmh {
 
     for (size_type c = 0; c < _local_cells.size(); ++c)
     {
-      const cell_type& cell = get_cell(c); // local cell index automatically converted to cell handle
+      const cell_type& cell = _local_cells[c];
       for (int v = 0; v < cell_tp::num_vertices(cell); ++v)
       {
         const point_type& point = _vertices[cell_vertex(cell, v)];
-        if (point.x() < xmin) xmin = point.x();
-        if (point.x() > xmax) xmax = point.x();
-        if (point.y() < ymin) ymin = point.y();
-        if (point.y() > ymax) ymax = point.y();
-        if (point.z() < zmin) zmin = point.z();
-        if (point.z() > zmax) zmax = point.z();
+        if (point.x < xmin) xmin = point.x;
+        if (point.x > xmax) xmax = point.x;
+        if (point.y < ymin) ymin = point.y;
+        if (point.y > ymax) ymax = point.y;
+        if (point.z < zmin) zmin = point.z;
+        if (point.z > zmax) zmax = point.z;
       }
     }
 
@@ -387,9 +388,9 @@ namespace pmh {
     for (int v = 0; v < num_vertices; ++v)
     {
       const point_type& point = _vertices[cell_vertex(cell, v)];
-      x += point.x();
-      y += point.y();
-      z += point.z();
+      x += point.x;
+      y += point.y;
+      z += point.z;
     }
 
     return std::make_tuple(x / num_vertices, y / num_vertices, z / num_vertices);
@@ -475,8 +476,33 @@ namespace pmh {
   void parallel_mesh_3d<R, CT, OP, TP>::export_to_msh_format(std::ostream& out, int config) const
   {
     assert(config >= 0 && config <= 2);
-    int cell_index = 1; // 1-based index in Gmsh!
 
+    out << "$MeshFormat" << std::endl;
+    out << "4.1 0 8" << std::endl;
+    out << "$EndMeshFormat" << std::endl;
+	
+    // Nodes
+    out << "$Nodes" << std::endl;
+    out << "1 " << num_vertices() << " 1 " << num_vertices() << std::endl;
+    out << "3 1 0 " << num_vertices() << std::endl;
+    for (size_type v = 1; v <= _vertices.size(); ++v) // 1-based index in Gmsh!
+      out << v << std::endl;
+    for (size_type v = 1; v <= _vertices.size(); ++v)
+    {
+      const point_type& point = _vertices[v - 1]; // 1-based index in Gmsh!
+      out << point.x << " " << point.y << " " << point.z << std::endl;
+    }
+    out << "$EndNodes" << std::endl;
+
+    // Elements - TODO: group cells based on shape and write each group
+    //            TODO: in a different section
+    out << "$Elements" << std::endl;
+    int num_cells = config == 0 ? num_local_cells() : (config == 1 ? num_ghost_cells() :
+                    num_local_cells() + num_ghost_cells());
+    out << "1 " << num_cells << " 1 " << num_cells << std::endl;
+    out << "3 1 5 " << num_cells << std::endl; // NOTE: HARD-CODED SHAPE OF HEX (ELEMENT TYPE = 5)!
+        
+    int cell_index = 1; // 1-based index in Gmsh!
     if (config == 0 || config == 2)
     {
       for (auto it = _local_cells.cbegin(); it != _local_cells.cend(); ++it)
@@ -500,6 +526,8 @@ namespace pmh {
         out << std::endl;
       }
     }
+
+    out << "$EndElements" << std::endl;
   }
 
 } // namespace pmh

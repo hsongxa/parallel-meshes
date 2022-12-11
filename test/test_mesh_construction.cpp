@@ -18,6 +18,7 @@
 #include "tests.h"
 #include "parallel_mesh.h"
 
+#include <tuple>
 #include <vector>
 #include <variant>
 #include <iostream>
@@ -55,6 +56,14 @@ int test_mesh_construction()
   hex_mesh.print_twin_hfs(std::cout);
   std::cout << std::endl;
 
+  std::tuple<double, double, double, double, double, double> bbox = hex_mesh.local_bounding_box();
+  std::cout << "local bounding box: [" << std::get<0>(bbox) << ", " << std::get<1>(bbox) << ", ";
+  std::cout << std::get<2>(bbox) << ", " << std::get<3>(bbox) << ", " << std::get<4>(bbox) << ", ";
+  std::cout << std::get<5>(bbox) << "]" << std::endl;
+
+  std::cout << "------ hex mesh in Gmsh format ------" << std::endl;
+  hex_mesh.export_to_msh_format(std::cout);
+
   // add one more vertex and a pyramid to the list
   vertices.push_back(1);
   vertices.push_back(1);
@@ -72,11 +81,23 @@ int test_mesh_construction()
   mixed_mesh.fill_local_cells(connect.begin(), connect.end());
   mixed_mesh.construct_topology();
 
+  std::cout << std::endl;
   std::cout << "------ mixed mesh cell connectivities ------" << std::endl;
   mixed_mesh.print_connectivity(std::cout);
   std::cout << "------ mixed mesh twin half-facets ------" << std::endl;
   mixed_mesh.print_twin_hfs(std::cout);
   std::cout << std::endl;
+
+  bbox = mixed_mesh.local_bounding_box();
+  std::cout << "local bounding box: [" << std::get<0>(bbox) << ", " << std::get<1>(bbox) << ", ";
+  std::cout << std::get<2>(bbox) << ", " << std::get<3>(bbox) << ", " << std::get<4>(bbox) << ", ";
+  std::cout << std::get<5>(bbox) << "]" << std::endl;
+
+  // index of local cell will be automatically converted
+  // to cell handle - this applies to local cell only
+  std::tuple<double, double, double> centroid = mixed_mesh.cell_centroid(8);
+  std::cout << "centroid of the last cell: (" << std::get<0>(centroid);
+  std::cout << ", " << std::get<1>(centroid) << ", " << std::get<2>(centroid) << ")" << std::endl;
 
   return 0;
 }
