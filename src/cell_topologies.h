@@ -23,16 +23,9 @@
 #include <cstring>
 #include <variant>
 
-namespace pmh {
+#include "cell_shapes.h"
 
-  // the shape enum
-  enum class shape_3d
-  {
-    HEXAHEDRON = 0,
-    WEDGE,
-    PYRAMID,
-    TETRAHEDRON
-  };
+namespace pmh {
 
   // the following topologies all follow the CGNS convention
 
