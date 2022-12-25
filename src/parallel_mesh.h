@@ -19,17 +19,21 @@
 #define PARALLEL_MESH_H
 
 #include "vertex_types.h"
-#include "kd_tree.h"
 #include "cell_types.h"
 #include "cell_type_traits.h"
+#include "mpi_datatype_traits.h"
+#include "kd_tree.h"
 
+#include <mpi.h>
 #include <cstddef>
 #include <limits>
 #include <tuple>
 #include <vector>
+#include <set>
 #include <map>
 #include <cassert>
 #include <algorithm>
+#include <numeric>
 #include <iostream>
 
 namespace pmh {
@@ -51,9 +55,11 @@ namespace pmh {
   // The partitioning/repartitioning and the construction of
   // ghost layers are kept separate, i.e., partitioning only
   // (re)distributes local cells, not ghost cells. And the
-  // construction of ghost layers is performed after the
-  // partitioning/repartitioning.
+  // construction of ghost layers should be performed after
+  // the partitioning/repartitioning.
   //
+  // Vertices and cells are identified by their local indices
+  // on the rank - there are no global ID's for them.
   template< class R, class CT,
             class OP = typename cell_type_traits<CT>::operator_type,
             class TP = typename cell_type_traits<CT>::topology_type >
@@ -65,8 +71,6 @@ namespace pmh {
     using cell_op = OP;
     using cell_tp = TP;
     using size_type = std::size_t;
-
-    explicit parallel_mesh_3d(int part_id) : _part_id(part_id) {}
 
     // ------ local construction operations ------
 
@@ -81,10 +85,12 @@ namespace pmh {
     // ------ MPI operations ------
 
     // partitioning/repartitioning
+    // TODO: expand to handle cell-based property re-distribution
     template<class InputIt>
-    void repartition(InputIt first, InputIt last);
+    void repartition(MPI_Comm comm, InputIt first, InputIt last);
 
     // one layer of ghost cells that are face neighbors of local cells
+    // TODO: expand to also distribute cell-based properties for the ghost layer
     void construct_ghost_layer();
 
     // ------ queries of vertices, faces, and cells ------
@@ -166,18 +172,22 @@ namespace pmh {
 
     void fill_vtx_to_hfs();
 
+    // remove duplicate vertices and update connectivities
+    void remove_duplicate_vertices(std::vector<point_type>& vertices, std::vector<cell_type>& cells);
+
+    // ------ MPI communications ------
+
+    // it0: beginning of send scheme; it1: beginning of indices of cells to send;
+    // vtx_it: output of received vertices; cell_it: output of received cell connectivities
+    template<typename RandIt, typename OutIt1, typename OutIt2>
+    void send_recv_cells(MPI_Comm comm, RandIt it0, RandIt it1, OutIt1 vtx_it, OutIt2 cell_it);
+
   private:
     std::vector<point_type>  _vertices;
     std::vector<hf_handle_t> _vtx_to_hfs;
 
     std::vector<cell_type>   _local_cells;
     std::vector<cell_type>   _ghost_cells;
-
-    int _part_id; // rank
-
-    // only used in MPI operations
-    using vertex_comparer = vertex_3d_comparer<R, std::int64_t>;
-    kd_tree<3, vertex_3d<R, std::int64_t>, vertex_comparer> _vtx_tree;
 
     static constexpr int MAX_NUM_VERTICES_PER_FACE = 4;
     static constexpr int MAX_NUM_FACES_INCIDENT_TO_VERTEX = 4; // pyramid has 4, all other types have 3
@@ -246,7 +256,10 @@ namespace pmh {
           dict.erase(it_twin);
         }
         else
+        {
+          twin_hf(cell, f, hf_handle_t()); // boundary facet indicated by invalid twin hf
           dict.insert(std::make_pair(vtuple, hf_handle_t(cell_handle, f)));
+        }
       }
     }
 
@@ -275,7 +288,10 @@ namespace pmh {
           dict.erase(it_twin);
         }
         else
+        {
+          twin_hf(cell, f, hf_handle_t()); // boundary facet indicated by invalid twin hf
           dict.insert(std::make_pair(vtuple, hf_handle_t(cell_handle, f)));
+        }
       }
     }
   }
@@ -397,13 +413,287 @@ namespace pmh {
   }
 
   template<class R, class CT, class OP, class TP> template<class InputIt>
-  void parallel_mesh_3d<R, CT, OP, TP>::repartition(InputIt first, InputIt last)
+  void parallel_mesh_3d<R, CT, OP, TP>::repartition(MPI_Comm comm, InputIt first, InputIt last)
   {
+    int num_procs, rank;
+    MPI_Comm_size(comm, &num_procs);
+    MPI_Comm_rank(comm, &rank);
+
+    // prepare scheme and cell indices
+
+//    send_recv_cells(comm, , , , );
+
+    // NOTE: a similar function, send_recv_cell_properties(), could be added and
+    // NOTE: called here to handle the re-distribution of cell-based properties
+
+    // replace data structures
+
+    _ghost_cells.clear();
+    _vtx_to_hfs.clear();
+
+//    remove_duplicate_vertices(, );
+
+    construct_topology();
   }
 
   template<class R, class CT, class OP, class TP>
   void parallel_mesh_3d<R, CT, OP, TP>::construct_ghost_layer()
   {
+
+    // NOTE: a similar function, send_recv_cell_properties(), could be added and
+    // NOTE: called here to handle the distribution of cell-based properties for
+    // NOTE: the ghost layer
+
+    construct_topology();
+  }
+
+  // it0: beginning of send scheme; it1: beginning of indices of cells to send;
+  // vtx_it: output of received vertices; cell_it: output of received cell connectivities
+  template<class R, class CT, class OP, class TP>
+  template<typename RandIt, typename OutIt1, typename OutIt2>
+  void parallel_mesh_3d<R, CT, OP, TP>::send_recv_cells(MPI_Comm comm, RandIt it0, RandIt it1,
+                                                        OutIt1 vtx_it, OutIt2 cell_it)
+  {
+    int num_procs;
+    MPI_Comm_size(comm, &num_procs);
+
+    // 1. send-receive schemes for vertices
+    std::vector<integer_type> vtx_recv_scheme(num_procs);
+    std::vector<integer_type> vtx_send_scheme;
+    std::vector<integer_type> vtx_to_send;
+
+    RandIt cid_begin = it1;
+    for (RandIt it = it0; it < it0 + num_procs; ++it)
+    {
+      integer_type cid_size = *it;
+
+      std::set<integer_type> vtx_indices;
+      for (RandIt c = cid_begin; c != cid_begin + cid_size; ++c)
+      {
+        const cell_type& cell = _local_cells[*c];
+        for (int v = 0; v < cell_tp::num_vertices(cell); ++v)
+          vtx_indices.insert(cell_vertex(cell, v));
+      }
+
+      vtx_send_scheme.push_back(vtx_indices.size());
+
+      size_type cur_size = vtx_to_send.size();
+      for (auto sit = vtx_indices.cbegin(); sit != vtx_indices.cend(); ++sit)
+        vtx_to_send.push_back(*sit);
+      std::sort(vtx_to_send.begin() + cur_size, vtx_to_send.end()); // may do nothing
+
+      cid_begin += cid_size;
+    }
+
+    MPI_Alltoall(vtx_send_scheme.data(), 1, mpi_datatype<integer_type>, vtx_recv_scheme.data(),
+                 1, mpi_datatype<integer_type>, comm);
+
+    // 2. send-receive vertices, in the form of points (sets of unique vertices are
+    //    sent from each rank but on the receiving rank, there could be duplicates)
+    integer_type vtx_recv_size = std::reduce(vtx_recv_scheme.cbegin(), vtx_recv_scheme.cend(), 0);
+    std::vector<R> vtx_recv_buffer(3 * vtx_recv_size);
+
+    //    receiving
+    int num_recvs = 0;
+    std::vector<MPI_Request> recv_requests(num_procs);
+    integer_type vtx_offset = 0;
+    for (int p = 0; p < num_procs; ++p)
+    {
+      integer_type count = vtx_recv_scheme[p];
+      if (count > 0)
+      {
+        MPI_Irecv(vtx_recv_buffer.data() + vtx_offset, 3 * count, mpi_datatype<R>, p, 0, comm, &recv_requests[num_recvs++]);
+        vtx_offset += (3 * count);
+      }
+    }
+
+    //    sending
+    int num_sends = 0;
+    std::vector<MPI_Request> send_requests(num_procs);
+    vtx_offset = 0;
+    for (int p = 0; p < num_procs; ++p)
+    {
+      integer_type count = vtx_send_scheme[p];
+      if (count > 0)
+      {
+        std::vector<R> vtx_send_buffer;
+        for (integer_type i = 0; i < count; ++i)
+        {
+          const point_type& point = _vertices[vtx_to_send[i + vtx_offset]];
+          vtx_send_buffer.push_back(point.x);
+          vtx_send_buffer.push_back(point.y);
+          vtx_send_buffer.push_back(point.z);
+        }
+
+        MPI_Isend(vtx_send_buffer.data(), 3 * count, mpi_datatype<R>, p, 0, comm, &send_requests[num_sends++]);
+        vtx_offset += count;
+      }
+    }
+
+    std::vector<MPI_Status> sends(num_sends);
+    MPI_Waitall(num_sends, send_requests.data(), sends.data());
+    std::vector<MPI_Status> recvs(num_recvs);
+    MPI_Waitall(num_recvs, recv_requests.data(), recvs.data());
+
+    // 3. send-receive schemes for cell connectivities
+    std::vector<integer_type> conn_recv_sizes(num_recvs);
+    num_recvs = 0;
+    for (int p = 0; p < num_procs; ++p)
+      if (vtx_recv_scheme[p] > 0)
+      {
+        MPI_Irecv(conn_recv_sizes.data() + num_recvs, 1, mpi_datatype<integer_type>, p, 0, comm, &recv_requests[num_recvs]);
+        ++num_recvs;
+      }
+
+    num_sends = 0;
+    cid_begin = it1;
+    for (int p = 0; p < num_procs; ++p)
+      if (vtx_send_scheme[p] > 0)
+      {
+        integer_type cid_size = *(it0 + p);
+        assert(cid_size > 0);
+
+        integer_type conn_size = 0;
+        for (RandIt c = cid_begin; c != cid_begin + cid_size; ++c)
+        {
+          const cell_type& cell = _local_cells[*c];
+          conn_size += cell_tp::num_vertices(cell) + 1; // an extra integer to indicate the cell shape
+        }
+
+        MPI_Isend(&conn_size, 1, mpi_datatype<integer_type>, p, 0, comm, &send_requests[num_sends++]);
+
+        cid_begin += cid_size;
+      }
+
+    MPI_Waitall(num_sends, send_requests.data(), sends.data());
+    MPI_Waitall(num_recvs, recv_requests.data(), recvs.data());
+
+    // 4. send-receive cell connectivities
+    integer_type conn_recv_size = std::reduce(conn_recv_sizes.cbegin(), conn_recv_sizes.cend(), 0);
+    std::vector<integer_type> conn_recv_buffer(conn_recv_size);
+
+    //    receiving
+    num_recvs = 0;
+    integer_type conn_offset = 0;
+    for (int p = 0; p < num_procs; ++p)
+      if (vtx_recv_scheme[p] > 0)
+      {
+        integer_type count = conn_recv_sizes[num_recvs];
+        MPI_Irecv(conn_recv_buffer.data() + conn_offset, count, mpi_datatype<integer_type>, p, 0, comm, &recv_requests[num_recvs]);
+        ++num_recvs;
+        conn_offset += count;
+      }
+
+    //    sending
+    num_sends = 0;
+    size_type sct_begin = 0;
+    cid_begin = it1;
+    for (int p = 0; p < num_procs; ++p)
+    {
+      integer_type sct_size = vtx_send_scheme[p];
+      assert(sct_size >= 0);
+
+      if (sct_size > 0)
+      {
+        integer_type cid_size = *(it0 + p);
+        assert(cid_size > 0);
+
+        std::vector<integer_type> conn_send_buffer;
+        for (RandIt c = cid_begin; c != cid_begin + cid_size; ++c)
+        {
+          const cell_type& cell = _local_cells[*c];
+          conn_send_buffer.push_back(cell_shape(cell)); // shape_3d enum sent as integer
+          for (int v = 0; v < cell_tp::num_vertices(cell); ++v)
+          {
+            // convert the original vertex index to new index to
+            // the vector of vertices sent in 2. NOTE that indices
+            // in the section [sct_begin, sct_begin + sct_size) of
+            // vtx_to_send are already ordered due to the call to
+            // std::sort() in 1 so a binary search will work.
+            integer_type vid = cell_vertex(cell, v);
+            auto it_srch = std::lower_bound(vtx_to_send.begin() + sct_begin,
+                                            vtx_to_send.begin() + sct_begin + sct_size, vid);
+            assert(it_srch != vtx_to_send.begin() + sct_begin + sct_size);
+            conn_send_buffer.push_back(it_srch - vtx_to_send.begin() - sct_begin);
+          }
+        }
+
+        MPI_Isend(conn_send_buffer.data(), conn_send_buffer.size(), mpi_datatype<integer_type>,
+                  p, 0, comm, &send_requests[num_sends++]);
+
+        sct_begin += sct_size;
+        cid_begin += cid_size;
+      }
+    }
+
+    MPI_Waitall(num_sends, send_requests.data(), sends.data());
+    MPI_Waitall(num_recvs, recv_requests.data(), recvs.data());
+
+    // 5. populate output data structures
+    for (integer_type i = 0; i < 3 * vtx_recv_size; i += 3)
+      *vtx_it = point_3d(vtx_recv_buffer[i], vtx_recv_buffer[i + 1],  vtx_recv_buffer[i + 2]); 
+
+    num_recvs = 0;
+    vtx_offset = 0;
+    conn_offset = 0;
+    for (int p = 0; p < num_procs; ++p)
+    {
+      integer_type vtx_count = vtx_recv_scheme[p];
+      if (vtx_count > 0)
+      {
+        integer_type conn_count = conn_recv_sizes[num_recvs++];
+        for (integer_type i = conn_offset; i < (conn_offset + conn_count); )
+        {
+          cell_type cell = cell_op::create_cell(static_cast<shape_3d>(conn_recv_buffer[i++]));
+          for (int v = 0; v < cell_tp::num_vertices(cell); ++v)
+            cell_vertex(cell, v, vtx_offset + conn_recv_buffer[i++]);
+          *cell_it = cell;
+        }
+
+        vtx_offset += vtx_count;
+        conn_offset += conn_count;
+      }
+    }
+  }
+
+  template<class R, class CT, class OP, class TP>
+  void parallel_mesh_3d<R, CT, OP, TP>::remove_duplicate_vertices(std::vector<point_type>& vertices,
+                                                                  std::vector<cell_type>& cells)
+  {
+    using vertex_comparer = vertex_3d_comparer<R, integer_type>; // only compare x, y, and z, not id
+    using vertex_type = vertex_3d<R, integer_type>;
+    kd_tree<3, vertex_type, vertex_comparer> vtx_tree;
+
+    std::vector<std::pair<integer_type, integer_type>> vtx_to_remove;
+    for (size_type i = 0; i < vertices.size(); ++i)
+    {
+      const point_type& point = vertices[i];
+      vertex_type vertex{point.x, point.y, point.z, i};
+      auto it = vtx_tree.find(vertex);
+      if (it == vtx_tree.end()) vtx_tree.insert(vertex);
+      else vtx_to_remove.push_back(std::make_pair(i, it->id));
+    }
+
+    integer_type num_removed = 0;
+    for (auto vit = vtx_to_remove.cbegin(); vit != vtx_to_remove.cend(); ++vit)
+    {
+      integer_type removed = vit->first;
+      integer_type replacement = vit->second;
+
+      vertices.erase(vertices.begin() + removed - num_removed);
+      ++num_removed;
+
+      for (auto cit = cells.begin(); cit != cells.end(); ++cit)
+      {
+        cell_type& cell = *cit;
+        for (int v = 0; v < cell_tp::num_vertices(cell); ++v)
+        {
+          integer_type vid = cell_vertex(cell, v);
+          if (vid == removed) cell_vertex(cell, v, replacement);
+          else if (vid > removed) cell_vertex(cell, v, vid - 1);
+        }
+      }
+    }
   }
 
   template<class R, class CT, class OP, class TP>
@@ -504,7 +794,6 @@ namespace pmh {
         
     int cell_index = 1; // 1-based index in Gmsh!
     if (config == 0 || config == 2)
-    {
       for (auto it = _local_cells.cbegin(); it != _local_cells.cend(); ++it)
       {
         const cell_type& cell = *it;
@@ -513,10 +802,8 @@ namespace pmh {
                 out << " " << cell_vertex(cell, v) + 1; // vertex index is also 1-based!
         out << std::endl;
       }
-    }
 
     if (config == 1 || config == 2)
-    {
       for (auto it = _ghost_cells.cbegin(); it != _ghost_cells.cend(); ++it)
       {
         const cell_type& cell = *it;
@@ -525,7 +812,6 @@ namespace pmh {
                 out << " " << cell_vertex(cell, v) + 1; // vertex index is also 1-based!
         out << std::endl;
       }
-    }
 
     out << "$EndElements" << std::endl;
   }
