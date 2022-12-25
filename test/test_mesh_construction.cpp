@@ -45,7 +45,7 @@ int test_mesh_construction()
                            0, 12, 13, 16, 15, 21, 22, 25, 24,
                            0, 13, 14, 17, 16, 22, 23, 26, 25};
   // hex mesh
-  parallel_mesh_3d<double, hex_t> hex_mesh(0);
+  parallel_mesh_3d<double, hex_t> hex_mesh;
   hex_mesh.fill_local_vertices(vertices.begin(), vertices.end());
   hex_mesh.fill_local_cells(connect.begin(), connect.end());
   hex_mesh.construct_topology();
@@ -76,7 +76,7 @@ int test_mesh_construction()
   connect.push_back(27);
 
   // mixed shape mesh of hex, tet, wedge, and pyramid
-  parallel_mesh_3d<double, std::variant<hex_t, tet_t, wdg_t, prm_t>> mixed_mesh(0);
+  parallel_mesh_3d<double, std::variant<hex_t, tet_t, wdg_t, prm_t>> mixed_mesh;
   mixed_mesh.fill_local_vertices(vertices.begin(), vertices.end());
   mixed_mesh.fill_local_cells(connect.begin(), connect.end());
   mixed_mesh.construct_topology();
