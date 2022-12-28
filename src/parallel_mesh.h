@@ -31,6 +31,7 @@
 #include <vector>
 #include <set>
 #include <map>
+#include <iterator>
 #include <cassert>
 #include <algorithm>
 #include <numeric>
@@ -193,6 +194,7 @@ namespace pmh {
     static constexpr int MAX_NUM_FACES_INCIDENT_TO_VERTEX = 4; // pyramid has 4, all other types have 3
 
   public: // mainly for debugging
+    void print_vertices(std::ostream& out) const;
     void print_connectivity(std::ostream& out) const;
     void print_twin_hfs(std::ostream& out) const;
     // export: local cells only (config=0); ghost cells only (config=1); or both local and ghost cells (config=2)
@@ -415,23 +417,43 @@ namespace pmh {
   template<class R, class CT, class OP, class TP> template<class InputIt>
   void parallel_mesh_3d<R, CT, OP, TP>::repartition(MPI_Comm comm, InputIt first, InputIt last)
   {
+    assert(std::distance(first, last) == num_local_cells());
+
     int num_procs, rank;
     MPI_Comm_size(comm, &num_procs);
     MPI_Comm_rank(comm, &rank);
 
     // prepare scheme and cell indices
+    std::vector<integer_type> scheme(num_procs, 0);
+    std::vector<integer_type> parts(num_local_cells(), rank);
 
-//    send_recv_cells(comm, , , , );
+    for (InputIt it = first; it != last; ++it) scheme[*it]++;
+    std::vector<integer_type> offset(num_procs, 0);
+    for (int p = 1; p < num_procs; ++p) offset[p] = scheme[p - 1];
 
+    integer_type cid = 0;
+    for (InputIt it = first; it != last; ++it)
+    {
+      integer_type part = *it;
+      parts[offset[part]] = cid;
+      offset[part]++;
+      cid++;
+    }
+
+    std::vector<point_type> new_vertices;
+    std::vector<cell_type> new_cells;
+    send_recv_cells(comm, scheme.cbegin(), parts.cbegin(), std::back_inserter(new_vertices), std::back_inserter(new_cells));
     // NOTE: a similar function, send_recv_cell_properties(), could be added and
     // NOTE: called here to handle the re-distribution of cell-based properties
 
     // replace data structures
-
     _ghost_cells.clear();
     _vtx_to_hfs.clear();
+    _vertices = new_vertices;
+    _local_cells = new_cells;
 
-//    remove_duplicate_vertices(, );
+    // remove duplicate vertices
+    remove_duplicate_vertices(_vertices, _local_cells);
 
     construct_topology();
   }
@@ -602,7 +624,7 @@ namespace pmh {
         for (RandIt c = cid_begin; c != cid_begin + cid_size; ++c)
         {
           const cell_type& cell = _local_cells[*c];
-          conn_send_buffer.push_back(cell_shape(cell)); // shape_3d enum sent as integer
+          conn_send_buffer.push_back(static_cast<integer_type>(cell_shape(cell))); // shape_3d enum sent as integer
           for (int v = 0; v < cell_tp::num_vertices(cell); ++v)
           {
             // convert the original vertex index to new index to
@@ -631,7 +653,7 @@ namespace pmh {
 
     // 5. populate output data structures
     for (integer_type i = 0; i < 3 * vtx_recv_size; i += 3)
-      *vtx_it = point_3d(vtx_recv_buffer[i], vtx_recv_buffer[i + 1],  vtx_recv_buffer[i + 2]); 
+      *vtx_it = point_type{vtx_recv_buffer[i], vtx_recv_buffer[i + 1],  vtx_recv_buffer[i + 2]}; 
 
     num_recvs = 0;
     vtx_offset = 0;
@@ -693,6 +715,17 @@ namespace pmh {
           else if (vid > removed) cell_vertex(cell, v, vid - 1);
         }
       }
+    }
+  }
+
+  template<class R, class CT, class OP, class TP>
+  void parallel_mesh_3d<R, CT, OP, TP>::print_vertices(std::ostream& out) const
+  {
+    out << "list of vertices (size = " << _vertices.size() << ")" << std::endl;
+    for (size_type v = 0; v < _vertices.size(); ++v)
+    {
+      const point_type& point = _vertices[v];
+      out << v << ": (" << point.x << ", " << point.y << ", " << point.z << ")" << std::endl;
     }
   }
 

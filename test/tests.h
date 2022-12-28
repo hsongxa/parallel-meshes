@@ -19,5 +19,6 @@
 #define TESTS_H
 
 int test_mesh_construction();
+int test_mesh_partitioning(int rank_to_display);
 
 #endif
