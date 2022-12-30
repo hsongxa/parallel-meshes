@@ -92,7 +92,7 @@ namespace pmh {
 
     // one layer of ghost cells that are face neighbors of local cells
     // TODO: expand to also distribute cell-based properties for the ghost layer
-    void construct_ghost_layer();
+    void construct_ghost_layer(MPI_Comm comm);
 
     // ------ queries of vertices, faces, and cells ------
     // ------ bounding box and centroid are needed by SFC based mesh partitioners ------
@@ -173,9 +173,6 @@ namespace pmh {
 
     void fill_vtx_to_hfs();
 
-    // remove duplicate vertices and update connectivities
-    void remove_duplicate_vertices(std::vector<point_type>& vertices, std::vector<cell_type>& cells);
-
     // ------ MPI communications ------
 
     // it0: beginning of send scheme; it1: beginning of indices of cells to send;
@@ -183,12 +180,29 @@ namespace pmh {
     template<typename RandIt, typename OutIt1, typename OutIt2>
     void send_recv_cells(MPI_Comm comm, RandIt it0, RandIt it1, OutIt1 vtx_it, OutIt2 cell_it);
 
+    // ------ helpers ------
+
+    // remove duplicate vertices and update connectivities
+    void remove_duplicate_vertices(std::vector<point_type>& vertices, std::vector<cell_type>& cells);
+
+    static bool do_bbox_overlap(const R* b0, const R* b1);
+
+    // return indices of local cells whose faces match the input
+    std::vector<integer_type> match_boundary_faces(const R* vtx_begin, const R* vtx_end,
+                                                   const integer_type* face_begin, const integer_type* face_end) const;
+
+    // return mapped vertex indices for the input, which gets merged to _vertices
+    template<typename InputIt>
+    std::vector<integer_type> merge_vertices(InputIt new_vtx_begin, InputIt new_vtx_end);
+
   private:
     std::vector<point_type>  _vertices;
     std::vector<hf_handle_t> _vtx_to_hfs;
 
     std::vector<cell_type>   _local_cells;
     std::vector<cell_type>   _ghost_cells;
+
+    integer_type             _num_local_vertices; // beyond which are vertices used by ghost cells only
 
     static constexpr int MAX_NUM_VERTICES_PER_FACE = 4;
     static constexpr int MAX_NUM_FACES_INCIDENT_TO_VERTEX = 4; // pyramid has 4, all other types have 3
@@ -209,6 +223,7 @@ namespace pmh {
 
     while (first != last)
       _vertices.emplace_back(point_type{*first++, *first++, *first++});
+    _num_local_vertices = _vertices.size();
   }
 
   template<class R, class CT, class OP, class TP> template<class InputIt>
@@ -454,18 +469,228 @@ namespace pmh {
 
     // remove duplicate vertices
     remove_duplicate_vertices(_vertices, _local_cells);
+    _num_local_vertices = _vertices.size();
 
     construct_topology();
   }
 
   template<class R, class CT, class OP, class TP>
-  void parallel_mesh_3d<R, CT, OP, TP>::construct_ghost_layer()
+  void parallel_mesh_3d<R, CT, OP, TP>::construct_ghost_layer(MPI_Comm comm)
   {
+    // clean up
+    if (_vertices.size() > _num_local_vertices)
+      _vertices.erase(_vertices.begin() + _num_local_vertices, _vertices.end());
+    _ghost_cells.clear();
 
+    int num_procs, rank;
+    MPI_Comm_size(comm, &num_procs);
+    MPI_Comm_rank(comm, &rank);
+
+    // 1. allgather bounding boxes, numbers of boundary vertices and faces
+    std::vector<R> bboxes(6 * num_procs);
+    auto b = local_bounding_box();
+    R bbox[6] = {std::get<0>(b), std::get<1>(b), std::get<2>(b), std::get<3>(b), std::get<4>(b), std::get<5>(b)}; 
+    MPI_Allgather(bbox, 6, mpi_datatype<R>, bboxes.data(), 6, mpi_datatype<R>, comm);
+
+    std::vector<integer_type> boundary_vtx_counts(num_procs);
+    integer_type num_boundary_vertices = 0;
+    std::vector<integer_type> vtx_to_send;
+    assert(_vtx_to_hfs.size() == _vertices.size());
+    for (integer_type i = 0; i < _vtx_to_hfs.size(); ++i)
+    {
+      hf_handle_t hf = _vtx_to_hfs[i];
+      assert(!hf.cell_handle().is_ghost());
+      if (is_boundary_face(hf.cell_handle(), hf.face_index()))
+      {
+        vtx_to_send.push_back(i); // sorted in ascending order
+        ++num_boundary_vertices;
+      }
+    }
+    MPI_Allgather(&num_boundary_vertices, 1, mpi_datatype<integer_type>,
+                  boundary_vtx_counts.data(), 1, mpi_datatype<integer_type>, comm);
+
+    std::vector<integer_type> boundary_face_counts(num_procs);
+    integer_type num_boundary_faces = 0;
+    std::vector<vid_tuple<integer_type>> face_to_send;
+    int face_vertices[MAX_NUM_VERTICES_PER_FACE];
+    for (integer_type c = 0; c < _local_cells.size(); ++c)
+    {
+      const cell_type& cell = _local_cells[c];
+      for (int f = 0; f < cell_tp::num_faces(cell); ++f)
+      {
+        hf_handle_t hf = twin_hf(cell, f);
+        if (!hf.is_valid()) // boundary face
+        {
+          cell_tp::vertices_of_face(cell, f, face_vertices);
+          vid_tuple<integer_type> vtuple = cell_tp::num_vertices_of_face(cell, f) < 4 ?
+                                           std::make_tuple(integer_type(-1), cell_vertex(cell, face_vertices[0]),
+                                                           cell_vertex(cell, face_vertices[1]), cell_vertex(cell,
+                                                           face_vertices[2])) :
+                                           std::make_tuple(cell_vertex(cell, face_vertices[0]), cell_vertex(cell,
+                                                           face_vertices[1]), cell_vertex(cell, face_vertices[2]),
+                                                           cell_vertex(cell, face_vertices[3]));
+          order_vid_tuple(vtuple);
+          face_to_send.push_back(vtuple);
+          ++num_boundary_faces;
+        }
+      }
+    }
+    MPI_Allgather(&num_boundary_faces, 1, mpi_datatype<integer_type>,
+                  boundary_face_counts.data(), 1, mpi_datatype<integer_type>, comm);
+
+    assert((num_boundary_vertices == 0 && num_boundary_faces == 0) ||
+           (num_boundary_vertices > 0 && num_boundary_faces > 0));
+
+    // send-recv schemes of boundary vertices/faces can be computed on each
+    // rank without communications (e.g., via MPI_Alltoall), once we gather
+    // all bounding boxes and numbers of local boundary vertices/faces
+    std::vector<int> send_recv_procs;
+    integer_type vtx_recv_count = 0;
+    integer_type face_recv_count = 0;
+    for (int p = 0; p < num_procs; ++p)
+      if (p != rank && do_bbox_overlap(bbox, bboxes.data() + 6 * p) &&
+          num_boundary_vertices > 0 && boundary_vtx_counts[p] > 0)
+      {
+        send_recv_procs.push_back(p);
+        vtx_recv_count += boundary_vtx_counts[p];
+        face_recv_count += boundary_face_counts[p];
+      }
+
+    // 2. send-recv boundary vertices
+    int num_send_recvs = send_recv_procs.size();
+    std::vector<R> vtx_recv_buffer(3 * vtx_recv_count);
+
+    //    receiving
+    std::vector<MPI_Request> vtx_recv_requests(num_send_recvs);
+    integer_type vtx_offset = 0;
+    for (int i = 0; i < num_send_recvs; ++i)
+    {
+      int p = send_recv_procs[i];
+      integer_type count = boundary_vtx_counts[p];
+      MPI_Irecv(vtx_recv_buffer.data() + vtx_offset, 3 * count, mpi_datatype<R>, p, 0, comm, &vtx_recv_requests[i]);
+      vtx_offset += (3 * count);
+    }
+
+    //    sending - convert vertex id to (x, y, z)
+    std::vector<R> vtx_send_buffer;
+    for (auto it = vtx_to_send.cbegin(); it != vtx_to_send.cend(); ++it)
+    {
+      const point_type& point = _vertices[*it];
+      vtx_send_buffer.push_back(point.x);
+      vtx_send_buffer.push_back(point.y);
+      vtx_send_buffer.push_back(point.z);
+    }
+
+    std::vector<MPI_Request> vtx_send_requests(num_send_recvs);
+    for (int i = 0; i < num_send_recvs; ++i)
+      MPI_Isend(vtx_send_buffer.data(), vtx_send_buffer.size(), mpi_datatype<R>, send_recv_procs[i], 0,
+                comm, &vtx_send_requests[i]);
+
+    // 3. send-recv boundary faces
+    std::vector<integer_type> face_recv_buffer(4 * face_recv_count);
+
+    //    receiving
+    std::vector<MPI_Request> face_recv_requests(num_send_recvs);
+    integer_type face_offset = 0;
+    for (int i = 0; i < num_send_recvs; ++i)
+    {
+      int p = send_recv_procs[i];
+      integer_type count = boundary_face_counts[p];
+      MPI_Irecv(face_recv_buffer.data() + face_offset, 4 * count, mpi_datatype<R>, p, 0, comm, &face_recv_requests[i]);
+      face_offset += (4 * count);
+    }
+
+    //    sending - convert vertex id to the index to vtx_to_send
+    std::vector<integer_type> face_send_buffer;
+    for (auto it = face_to_send.cbegin(); it != face_to_send.cend(); ++it)
+    {
+      auto vtuple = *it;
+
+      integer_type vid = std::get<0>(vtuple);
+      integer_type mapped_vid = -1;
+      if (vid != -1)
+      {
+        auto it_srch = std::lower_bound(vtx_to_send.begin(), vtx_to_send.end(), vid);
+        assert(it_srch != vtx_to_send.end());
+        mapped_vid = it_srch - vtx_to_send.begin();
+      }
+      face_send_buffer.push_back(mapped_vid);
+
+      vid = std::get<1>(vtuple);
+      auto it_srch = std::lower_bound(vtx_to_send.begin(), vtx_to_send.end(), vid);
+      assert(it_srch != vtx_to_send.end());
+      face_send_buffer.push_back(it_srch - vtx_to_send.begin());
+
+      vid = std::get<2>(vtuple);
+      it_srch = std::lower_bound(vtx_to_send.begin(), vtx_to_send.end(), vid);
+      assert(it_srch != vtx_to_send.end());
+      face_send_buffer.push_back(it_srch - vtx_to_send.begin());
+
+      vid = std::get<3>(vtuple);
+      it_srch = std::lower_bound(vtx_to_send.begin(), vtx_to_send.end(), vid);
+      assert(it_srch != vtx_to_send.end());
+      face_send_buffer.push_back(it_srch - vtx_to_send.begin());
+    }
+
+    std::vector<MPI_Request> face_send_requests(num_send_recvs);
+    for (int i = 0; i < num_send_recvs; ++i)
+      MPI_Isend(face_send_buffer.data(), face_send_buffer.size(), mpi_datatype<integer_type>, send_recv_procs[i], 0,
+                comm, &face_send_requests[i]);
+
+    // 4. figure out cell send-recv schemes by matching boundary faces
+    std::vector<integer_type> scheme(num_procs, 0);
+    std::vector<integer_type> parts;
+
+    std::vector<MPI_Status> vtx_recvs(num_send_recvs);
+    std::vector<MPI_Status> face_recvs(num_send_recvs);
+    vtx_offset = 0;
+    face_offset = 0;
+    for (int i = 0; i < num_send_recvs; ++i)
+    {
+      MPI_Wait(&vtx_recv_requests[i], &vtx_recvs[i]);
+      MPI_Wait(&face_recv_requests[i], &face_recvs[i]);
+
+      int p = send_recv_procs[i];
+      integer_type vtx_count = boundary_vtx_counts[p];
+      integer_type face_count = boundary_face_counts[p];
+      std::vector<integer_type> matching_cells = match_boundary_faces(vtx_recv_buffer.data() + vtx_offset,
+                                                                      vtx_recv_buffer.data() + vtx_offset + 3 * vtx_count,
+                                                                      face_recv_buffer.data() + face_offset,
+                                                                      face_recv_buffer.data() + face_offset + 4 * face_count);
+      vtx_offset += (3 * vtx_count);
+      face_offset += (4 * face_count);
+
+      scheme[p] = matching_cells.size();
+      for (auto it = matching_cells.cbegin(); it != matching_cells.cend(); ++it)
+        parts.push_back(*it);
+    }
+
+    std::vector<MPI_Status> vtx_sends(num_send_recvs);
+    std::vector<MPI_Status> face_sends(num_send_recvs);
+    MPI_Waitall(num_send_recvs, vtx_send_requests.data(), vtx_sends.data());
+    MPI_Waitall(num_send_recvs, face_send_requests.data(), face_sends.data());
+
+    // 5. send-recv cells to form the ghost layer
+    std::vector<point_type> new_vertices;
+    send_recv_cells(comm, scheme.cbegin(), parts.cbegin(), std::back_inserter(new_vertices), std::back_inserter(_ghost_cells));
     // NOTE: a similar function, send_recv_cell_properties(), could be added and
     // NOTE: called here to handle the distribution of cell-based properties for
     // NOTE: the ghost layer
 
+    // 6. merge vertices and update connectivities of ghost cells
+    std::vector<integer_type> new_vids = merge_vertices(new_vertices.cbegin(), new_vertices.cend());
+    for (auto it = _ghost_cells.begin(); it != _ghost_cells.end(); ++it)
+    {
+      cell_type& cell = *it;
+      for (int v = 0; v < cell_tp::num_vertices(cell); ++v)
+      {
+        integer_type vid = cell_vertex(cell, v);
+        cell_vertex(cell, v, new_vids[vid]);
+      }
+    }
+
+    // TODO: we do not really need the full version of construct_topology() here,
+    // TODO: should have a custom version just to consider the impact of ghosts
     construct_topology();
   }
 
@@ -601,7 +826,8 @@ namespace pmh {
       if (vtx_recv_scheme[p] > 0)
       {
         integer_type count = conn_recv_sizes[num_recvs];
-        MPI_Irecv(conn_recv_buffer.data() + conn_offset, count, mpi_datatype<integer_type>, p, 0, comm, &recv_requests[num_recvs]);
+        MPI_Irecv(conn_recv_buffer.data() + conn_offset, count, mpi_datatype<integer_type>, p, 0,
+                  comm, &recv_requests[num_recvs]);
         ++num_recvs;
         conn_offset += count;
       }
@@ -716,6 +942,122 @@ namespace pmh {
         }
       }
     }
+  }
+
+  template<class R, class CT, class OP, class TP>
+  bool parallel_mesh_3d<R, CT, OP, TP>::do_bbox_overlap(const R* b0, const R* b1)
+  {
+    if (*b0 <= *(b1 + 3) && *b1 <= *(b0 + 3) &&
+        *(b0 + 1) <= *(b1 + 4) && *(b1 + 1) <= *(b0 + 4) &&
+        *(b0 + 2) <= *(b1 + 5) && *(b1 + 2) <= *(b0 + 5)) return true;
+    return false;
+  }
+
+  template<class R, class CT, class OP, class TP>
+  std::vector<integer_type>
+  parallel_mesh_3d<R, CT, OP, TP>::match_boundary_faces(const R* vtx_begin, const R* vtx_end,
+                                                        const integer_type* face_begin, const integer_type* face_end) const
+  {
+    // construct data structures from input for quick search
+    using vertex_comparer = vertex_3d_comparer<R, integer_type>; // only compare x, y, and z, not id
+    using vertex_type = vertex_3d<R, integer_type>;
+    kd_tree<3, vertex_type, vertex_comparer> input_vertices;
+
+    integer_type i = 0;
+    for (auto ptr = vtx_begin; ptr < vtx_end; ptr += 3)
+    {
+      auto ret = input_vertices.insert(vertex_type{*ptr, *(ptr + 1), *(ptr + 2), i++});
+      assert(ret.second); // the input points are unique, i.e., no duplicates
+    }
+
+    std::set<vid_tuple<integer_type>> input_faces;
+    for (auto ptr = face_begin; ptr < face_end; ptr += 4)
+    {
+      vid_tuple<integer_type> vtuple = std::make_tuple(*ptr, *(ptr + 1), *(ptr + 2), *(ptr +3));
+      order_vid_tuple(vtuple);
+      input_faces.insert(vtuple);
+    }
+
+    // search in local boundary faces to find the matching ones
+    int face_vertices[MAX_NUM_VERTICES_PER_FACE];
+    integer_type mapped_vids[MAX_NUM_VERTICES_PER_FACE];
+
+    std::vector<integer_type> matching_cells;
+    for (size_type c = 0; c < _local_cells.size(); ++c)
+    {
+      const cell_type& cell = _local_cells[c];
+      for (int f = 0; f < cell_tp::num_faces(cell); ++f)
+      {
+        hf_handle_t hf = twin_hf(cell, f);
+        if (!hf.is_valid()) // boundary face
+        {
+          cell_tp::vertices_of_face(cell, f, face_vertices);
+          int num_vertices = cell_tp::num_vertices_of_face(cell, f);
+
+          bool all_in_input = true;
+          for (int v = 0; v < num_vertices; ++v)
+          {
+            const point_type& point = _vertices[cell_vertex(cell, face_vertices[v])];
+            auto it = input_vertices.find(vertex_type{point.x, point.y, point.z, -1}); // id not used in search
+            if (it == input_vertices.end())
+            {
+              all_in_input = false;
+              break;
+            }
+            else mapped_vids[v] = it->id;
+          }
+
+          if (all_in_input)
+          {
+            vid_tuple<integer_type> vtuple = num_vertices < 4 ?
+              std::make_tuple(integer_type(-1), mapped_vids[0], mapped_vids[1], mapped_vids[2]) :
+              std::make_tuple(mapped_vids[0], mapped_vids[1], mapped_vids[2], mapped_vids[3]);
+            order_vid_tuple(vtuple);
+
+            auto it = input_faces.find(vtuple);
+            if (it != input_faces.end())
+            {
+              matching_cells.push_back(c);
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    return matching_cells;
+  }
+
+  template<class R, class CT, class OP, class TP> template<typename InputIt>
+  std::vector<integer_type> parallel_mesh_3d<R, CT, OP, TP>::merge_vertices(InputIt new_vtx_begin, InputIt new_vtx_end)
+  {
+    using vertex_comparer = vertex_3d_comparer<R, integer_type>; // only compare x, y, and z, not id
+    using vertex_type = vertex_3d<R, integer_type>;
+    kd_tree<3, vertex_type, vertex_comparer> vtx_tree;
+    for (integer_type i = 0; i < _vertices.size(); ++i)
+    {
+      const point_type& point = _vertices[i];
+      vtx_tree.insert(vertex_type{point.x, point.y, point.z, i});
+    }
+    assert(_num_local_vertices == _vertices.size());
+    assert(vtx_tree.size() == _vertices.size());
+
+    std::vector<integer_type> mapped_vid;
+    integer_type new_vid = _vertices.size();
+    for (InputIt it = new_vtx_begin; it != new_vtx_end; ++it)
+    {
+      const point_type& point = *it;
+      auto ret = vtx_tree.insert(vertex_type{point.x, point.y, point.z, new_vid});
+      if (!ret.second)
+        mapped_vid.push_back(ret.first->id);
+      else
+      {
+        _vertices.push_back(point);
+        mapped_vid.push_back(new_vid);
+        ++new_vid;
+      }
+    }
+    return mapped_vid;
   }
 
   template<class R, class CT, class OP, class TP>

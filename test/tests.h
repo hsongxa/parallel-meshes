@@ -20,5 +20,6 @@
 
 int test_mesh_construction();
 int test_mesh_partitioning(int rank_to_display);
+int test_ghost_layer(int rank_to_display);
 
 #endif

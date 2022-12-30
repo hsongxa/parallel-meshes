@@ -44,9 +44,18 @@ int main (int argc, char* argv[])
   if (rank == rank_to_display)
   {
     if (ret)
-      std::cout << "mesh partitioning tests failed!" << std::endl;
+      std::cout << "mesh partitioning tests failed!" << std::endl << std::endl;
     else
-      std::cout << "mesh partitioning tests passed!" << std::endl;
+      std::cout << "mesh partitioning tests passed!" << std::endl << std::endl;
+  }
+
+  ret = test_ghost_layer(rank_to_display);
+  if (rank == rank_to_display)
+  {
+    if (ret)
+      std::cout << "ghost layer tests failed!" << std::endl;
+    else
+      std::cout << "ghost layer tests passed!" << std::endl;
   }
 
   MPI_Finalize();
