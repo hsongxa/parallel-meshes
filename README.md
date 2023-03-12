@@ -1,7 +1,7 @@
 # parallel-meshes
 A family of 3D parallel unstructured meshes implemented in modern C++ and MPI. Provided with a partitionining scheme, the implementation distributes mesh cells to MPI processes and constructs ghost layers from local cells' face neighbors.
 
-Note that in this cimplementation, the construction of ghost layers is kept separate from the partitioning/repartitioning step. One can choose to construct the ghost layer when needed, or omit it altogether if it is not required by the numerical method. The construction of the ghost layer follows the ideas presented in
+Note that in this implementation, the construction of ghost layers is kept separate from the partitioning/repartitioning step. One can choose to construct the ghost layer when needed, or omit it altogether if it is not required by the numerical method. The construction of ghost layers follows the ideas presented in:
 
 **J.M. Patchett, B. Nouanesengesy, J. Pouderoux, J. Ahrens and H. Hagen, "Parallel multi-layer ghost cell generation for distributed unstructured grids", *2017 IEEE 7th Symposium on Large Data Analysis and Visualization (LDAV)*,  Phoenix, AZ, USA, 2017, pp. 84-91**
 
